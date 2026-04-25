@@ -27,6 +27,7 @@ type GradientListResponse = {
 type GradientFormState = {
   id?: number;
   name: string;
+  description: string;
   deg: string;
   type: GradientType;
   gradient: Array<{
@@ -34,6 +35,9 @@ type GradientFormState = {
     pos: string;
   }>;
 };
+
+const fallbackDescription =
+  "没想到怎么编，但这组颜色已经先替我把气氛铺好了。";
 
 const typeLabels: Record<GradientType, string> = {
   linear: "线性",
@@ -228,6 +232,7 @@ async function copyToClipboard(text: string) {
 function createEmptyForm(): GradientFormState {
   return {
     name: "New Gradient",
+    description: "",
     deg: "90",
     type: "linear",
     gradient: [
@@ -241,6 +246,7 @@ function createFormFromGradient(gradient: GradientRecord): GradientFormState {
   return {
     id: gradient.id,
     name: gradient.name,
+    description: gradient.description ?? "",
     deg: String(gradient.deg),
     type: gradient.type,
     gradient: gradient.gradient.map((stop) => ({
@@ -252,6 +258,10 @@ function createFormFromGradient(gradient: GradientRecord): GradientFormState {
 
 function gradientMatchesSearch(gradient: GradientRecord, searchTerm: string) {
   return gradient.name.toLowerCase().includes(searchTerm.toLowerCase());
+}
+
+function getGradientDescription(gradient: GradientRecord) {
+  return gradient.description?.trim() || fallbackDescription;
 }
 
 async function readJson<T>(response: Response) {
@@ -283,14 +293,23 @@ export default function GradientGallery() {
   const [total, setTotal] = useState(0);
   const [nextOffset, setNextOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
+  const [reloadVersion, setReloadVersion] = useState(0);
   const [form, setForm] = useState<GradientFormState | null>(null);
+  const [flippedIds, setFlippedIds] = useState<Set<number>>(new Set());
+  const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
+  const [pendingDeleteGradient, setPendingDeleteGradient] =
+    useState<GradientRecord | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<string | null>(null);
   const [copiedColor, setCopiedColor] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -299,6 +318,18 @@ export default function GradientGallery() {
 
     return () => window.clearTimeout(timeoutId);
   }, [searchInput]);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setNotice(null);
+    }, 2000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
 
   const fetchGradientsPage = useCallback(
     async ({
@@ -379,7 +410,7 @@ export default function GradientGallery() {
       });
 
     return () => controller.abort();
-  }, [fetchGradientsPage]);
+  }, [fetchGradientsPage, reloadVersion]);
 
   const loadMore = useCallback(async () => {
     if (!hasMore || isLoading || isLoadingMore) {
@@ -515,6 +546,7 @@ export default function GradientGallery() {
     const payload = {
       id: form.id,
       name: form.name,
+      description: form.description,
       deg: Number(form.deg),
       type: form.type,
       gradient: form.gradient.map((stop) => ({
@@ -598,29 +630,110 @@ export default function GradientGallery() {
     }
   }
 
-  async function handleDelete(gradient: GradientRecord) {
-    if (!window.confirm(`删除 ${gradient.name}？`)) {
+  async function confirmDeleteGradient() {
+    const gradientToDelete = pendingDeleteGradient;
+
+    if (!gradientToDelete) {
       return;
     }
 
     setError(null);
+    setNotice(null);
+    setIsDeleting(true);
 
     try {
       await readJson<{ ok: true }>(
-        await fetch(`/api/gradients?id=${gradient.id}`, {
+        await fetch(`/api/gradients?id=${gradientToDelete.id}`, {
           method: "DELETE",
         }),
       );
       setGradients((currentGradients) =>
-        currentGradients.filter((item) => item.id !== gradient.id),
+        currentGradients.filter((item) => item.id !== gradientToDelete.id),
       );
+      setFlippedIds((currentIds) => {
+        const nextIds = new Set(currentIds);
+
+        nextIds.delete(gradientToDelete.id);
+
+        return nextIds;
+      });
       setTotal((currentTotal) => Math.max(0, currentTotal - 1));
       setNextOffset((currentOffset) => Math.max(0, currentOffset - 1));
+      setPendingDeleteGradient(null);
     } catch (deleteError) {
       setError(
         deleteError instanceof Error ? deleteError.message : "删除失败。",
       );
+    } finally {
+      setIsDeleting(false);
     }
+  }
+
+  function resetListState() {
+    setSearchInput("");
+    setSearchTerm("");
+    setSelectedColor("all");
+    setSortDirection("asc");
+    setFlippedIds(new Set());
+  }
+
+  function handleExportBackup() {
+    window.location.href = "/api/gradients/backup";
+  }
+
+  function closeImportDialog() {
+    setPendingImportFile(null);
+    if (importInputRef.current) {
+      importInputRef.current.value = "";
+    }
+  }
+
+  async function confirmImportBackup() {
+    if (!pendingImportFile) {
+      return;
+    }
+
+    setIsImporting(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const response = await fetch("/api/gradients/backup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: await pendingImportFile.text(),
+      });
+      const data = await readJson<{ imported: number }>(response);
+
+      resetListState();
+      setGradients([]);
+      setTotal(0);
+      setNextOffset(0);
+      setHasMore(false);
+      setReloadVersion((currentVersion) => currentVersion + 1);
+      setNotice(`导入完成，共导入 ${data.imported} 个配色方案。`);
+      closeImportDialog();
+    } catch (importError) {
+      setError(
+        importError instanceof Error ? importError.message : "导入失败。",
+      );
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  function toggleCardFlip(gradientId: number) {
+    setFlippedIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+
+      if (nextIds.has(gradientId)) {
+        nextIds.delete(gradientId);
+      } else {
+        nextIds.add(gradientId);
+      }
+
+      return nextIds;
+    });
   }
 
   return (
@@ -632,13 +745,45 @@ export default function GradientGallery() {
               ? "正在加载"
               : `已加载 ${gradients.length} / ${total} 个配色方案`}
           </p>
-          <button
-            className="h-10 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400 focus:ring-offset-2"
-            onClick={() => setForm(createEmptyForm())}
-            type="button"
-          >
-            新增方案
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="h-10 rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-zinc-300 focus:ring-offset-2"
+              onClick={handleExportBackup}
+              type="button"
+            >
+              导出 JSON
+            </button>
+            <button
+              className="h-10 rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-zinc-300 focus:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
+              disabled={isImporting}
+              onClick={() => importInputRef.current?.click()}
+              type="button"
+            >
+              {isImporting ? "导入中" : "导入 JSON"}
+            </button>
+            <input
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+
+                if (file) {
+                  setError(null);
+                  setNotice(null);
+                  setPendingImportFile(file);
+                }
+              }}
+              ref={importInputRef}
+              type="file"
+            />
+            <button
+              className="h-10 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400 focus:ring-offset-2"
+              onClick={() => setForm(createEmptyForm())}
+              type="button"
+            >
+              新增方案
+            </button>
+          </div>
         </div>
 
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
@@ -730,13 +875,51 @@ export default function GradientGallery() {
           const backgroundStyle: CSSProperties = {
             background: getBackgroundValue(gradient),
           };
+          const isFlipped = flippedIds.has(gradient.id);
 
           return (
             <article
               className="overflow-hidden rounded-lg border border-black/10 bg-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-xl"
               key={gradient.id}
             >
-              <div className="h-44 w-full" style={backgroundStyle} />
+              <button
+                aria-label={`${isFlipped ? "显示配色" : "显示色彩寓意"} ${gradient.name}`}
+                className="group h-44 w-full [perspective:1000px]"
+                onClick={() => toggleCardFlip(gradient.id)}
+                type="button"
+              >
+                <span
+                  className={`relative block h-full w-full transition-transform duration-500 [transform-style:preserve-3d] ${
+                    isFlipped ? "[transform:rotateY(180deg)]" : ""
+                  }`}
+                >
+                  <span
+                    className="absolute inset-0 block [backface-visibility:hidden]"
+                    style={backgroundStyle}
+                  />
+                  <span
+                    className="absolute inset-0 overflow-hidden text-left text-white [backface-visibility:hidden] [transform:rotateY(180deg)]"
+                    style={backgroundStyle}
+                  >
+                    <span className="absolute inset-0 bg-white/15 backdrop-blur-2xl" />
+                    <span className="absolute inset-0 bg-gradient-to-br from-black/70 via-black/45 to-black/65" />
+                    <span
+                      className="relative flex h-full flex-col justify-between p-5"
+                      style={{
+                        textShadow:
+                          "0 1px 2px rgba(0,0,0,0.8), 0 8px 24px rgba(0,0,0,0.45)",
+                      }}
+                    >
+                      <span className="text-xs font-semibold uppercase text-white/75">
+                        色彩寓意
+                      </span>
+                      <span className="text-sm font-semibold leading-6 text-white">
+                        {getGradientDescription(gradient)}
+                      </span>
+                    </span>
+                  </span>
+                </span>
+              </button>
               <div className="space-y-4 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -791,7 +974,7 @@ export default function GradientGallery() {
                     <button
                       aria-label={`删除 ${gradient.name}`}
                       className="grid size-10 place-items-center rounded-md border border-red-200 text-red-600 transition hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-200 focus:ring-offset-2"
-                      onClick={() => handleDelete(gradient)}
+                      onClick={() => setPendingDeleteGradient(gradient)}
                       title="删除"
                       type="button"
                     >
@@ -828,6 +1011,110 @@ export default function GradientGallery() {
                 : "没有匹配的配色方案"}
       </div>
 
+      {notice ? (
+        <div
+          aria-live="polite"
+          className="fixed right-4 top-4 z-[60] w-[calc(100vw-2rem)] max-w-sm rounded-lg border border-emerald-200 bg-white/95 px-4 py-3 text-sm font-semibold text-emerald-700 shadow-2xl shadow-emerald-950/10 backdrop-blur"
+          role="status"
+        >
+          {notice}
+        </div>
+      ) : null}
+
+      {pendingImportFile ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+          <div
+            aria-labelledby="import-backup-title"
+            aria-modal="true"
+            className="w-full max-w-md overflow-hidden rounded-lg bg-white shadow-2xl"
+            role="dialog"
+          >
+            <div className="border-b border-zinc-200 px-5 py-4">
+              <h2
+                className="text-lg font-semibold text-zinc-950"
+                id="import-backup-title"
+              >
+                导入备份
+              </h2>
+            </div>
+            <div className="space-y-4 p-5">
+              <p className="text-sm font-medium leading-6 text-zinc-700">
+                导入会用这个文件全量覆盖当前数据库，现有配色方案会被替换，无法在应用内撤销。建议先导出 JSON 备份。
+              </p>
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2">
+                <p className="text-xs font-semibold uppercase text-zinc-400">
+                  文件
+                </p>
+                <p className="mt-1 truncate text-sm font-semibold text-zinc-800">
+                  {pendingImportFile.name}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-zinc-200 px-5 py-4">
+              <button
+                className="h-10 rounded-md border border-zinc-300 px-4 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:cursor-wait disabled:opacity-60"
+                disabled={isImporting}
+                onClick={closeImportDialog}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="h-10 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-700 disabled:cursor-wait disabled:opacity-60"
+                disabled={isImporting}
+                onClick={() => void confirmImportBackup()}
+                type="button"
+              >
+                {isImporting ? "导入中" : "确认导入"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingDeleteGradient ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+          <div
+            aria-labelledby="delete-gradient-title"
+            aria-modal="true"
+            className="w-full max-w-sm overflow-hidden rounded-lg bg-white shadow-2xl"
+            role="dialog"
+          >
+            <div className="border-b border-zinc-200 px-5 py-4">
+              <h2
+                className="text-lg font-semibold text-zinc-950"
+                id="delete-gradient-title"
+              >
+                删除配色方案
+              </h2>
+            </div>
+            <div className="space-y-3 p-5">
+              <p className="text-sm font-medium leading-6 text-zinc-700">
+                确定删除「{pendingDeleteGradient.name}」吗？这条配色方案会从数据库中移除。
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-zinc-200 px-5 py-4">
+              <button
+                className="h-10 rounded-md border border-zinc-300 px-4 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:cursor-wait disabled:opacity-60"
+                disabled={isDeleting}
+                onClick={() => setPendingDeleteGradient(null)}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="h-10 rounded-md bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-500 disabled:cursor-wait disabled:opacity-60"
+                disabled={isDeleting}
+                onClick={() => void confirmDeleteGradient()}
+                type="button"
+              >
+                {isDeleting ? "删除中" : "确认删除"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {form ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
           <form
@@ -859,6 +1146,20 @@ export default function GradientGallery() {
                   }
                   type="text"
                   value={form.name}
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-sm font-semibold text-zinc-700">
+                  色彩寓意
+                </span>
+                <textarea
+                  className="mt-2 min-h-28 w-full resize-y rounded-md border border-zinc-300 px-3 py-2 text-sm leading-6 outline-none focus:border-zinc-500"
+                  maxLength={200}
+                  onChange={(event) =>
+                    setForm({ ...form, description: event.target.value })
+                  }
+                  value={form.description}
                 />
               </label>
 

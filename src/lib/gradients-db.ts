@@ -24,6 +24,7 @@ type GradientRow = {
   name: string;
   favorite: number;
   display_index: string;
+  description: string | null;
   deg: number;
   type: string;
   css_background: string | null;
@@ -49,6 +50,7 @@ type MaxIndexRow = {
 
 type GradientInput = {
   name?: unknown;
+  description?: unknown;
   favorite?: unknown;
   deg?: unknown;
   type?: unknown;
@@ -70,6 +72,12 @@ type ListGradientResult = {
   total: number;
   hasMore: boolean;
   nextOffset: number;
+};
+
+type GradientBackup = {
+  version: 1;
+  exportedAt: string;
+  gradients: StoredGradient[];
 };
 
 const databaseDir = path.join(process.cwd(), "data");
@@ -258,6 +266,46 @@ function getColorTags(stops: GradientStop[]): ColorFilter[] {
   return colorFilters.filter((filter) => tags.has(filter));
 }
 
+function buildDefaultDescription(gradient: GradientScheme) {
+  const index = Number(gradient.index);
+  const tags = getColorTags(gradient.gradient);
+  const paletteWords: Record<ColorFilter, string> = {
+    red: "玫瑰红调",
+    orange: "柑橘暖调",
+    yellow: "日光黄调",
+    green: "植萃绿调",
+    blue: "清透蓝调",
+    indigo: "暮靛冷调",
+    purple: "紫雾调性",
+    black: "墨色底蕴",
+    white: "柔白留光",
+  };
+  const lead = tags
+    .slice(0, 3)
+    .map((tag) => paletteWords[tag])
+    .join("、") || "柔和综合色调";
+  const moods = [
+    "像一枚刚拆封的色卡，克制里带着明亮的呼吸。",
+    "把空间情绪调到刚好，安静，却不失存在感。",
+    "适合留给封面、品牌角落，或一段想被记住的开场。",
+    "有轻微的光泽感，像午后纸样上慢慢晕开的温度。",
+    "不急着表达，却能把画面的秩序感稳稳托住。",
+    "带着一点展厅气质，让平面多出可触摸的层次。",
+    "像被校准过的心情，清晰、轻盈，也有一点浪漫。",
+    "为日常注入一格高级留白，温柔但不含糊。",
+  ];
+  const closing = [
+    "推荐用于视觉主色、氛围背景与精致的界面过渡。",
+    "适合用于海报、数字产品和轻奢感的视觉系统。",
+    "用在标题区或大面积背景里，会显得干净而有记忆点。",
+    "适合需要柔和吸引力的品牌、卡片和展示页。",
+  ];
+
+  return `${gradient.name} 以${lead}铺陈，${moods[index % moods.length]} ${
+    closing[index % closing.length]
+  }`;
+}
+
 function getDefaultGradients(): GradientScheme[] {
   const normalizedParsed = (parsedGradients as RawGradient[]).map(
     (gradient) => {
@@ -297,6 +345,7 @@ function initializeDatabase(db: DatabaseSync) {
       name TEXT NOT NULL,
       favorite INTEGER NOT NULL DEFAULT 0,
       display_index TEXT NOT NULL UNIQUE,
+      description TEXT,
       deg REAL NOT NULL DEFAULT 0,
       type TEXT NOT NULL DEFAULT 'linear',
       css_background TEXT,
@@ -321,6 +370,7 @@ function initializeDatabase(db: DatabaseSync) {
       FOREIGN KEY (gradient_id) REFERENCES gradients(id) ON DELETE CASCADE
     );
   `);
+  ensureDescriptionColumn(db);
   db.exec(`
     UPDATE gradients
     SET
@@ -351,7 +401,33 @@ function initializeDatabase(db: DatabaseSync) {
   if (!row?.count) {
     seedDatabase(db);
   } else {
+    refreshDefaultDescriptions(db);
     refreshAllColorTags(db);
+  }
+}
+
+function ensureDescriptionColumn(db: DatabaseSync) {
+  const columns = db.prepare("PRAGMA table_info(gradients)").all() as Array<{
+    name: string;
+  }>;
+
+  if (!columns.some((column) => column.name === "description")) {
+    db.exec("ALTER TABLE gradients ADD COLUMN description TEXT;");
+  }
+}
+
+function refreshDefaultDescriptions(db: DatabaseSync) {
+  const updateDescription = db.prepare(`
+    UPDATE gradients
+    SET
+      description = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE display_index = ?
+      AND (description IS NULL OR TRIM(description) = '')
+  `);
+
+  for (const gradient of getDefaultGradients()) {
+    updateDescription.run(buildDefaultDescription(gradient), gradient.index);
   }
 }
 
@@ -361,11 +437,12 @@ function seedDatabase(db: DatabaseSync) {
       name,
       favorite,
       display_index,
+      description,
       deg,
       type,
       css_background,
       blend_mode
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertStop = db.prepare(`
     INSERT INTO gradient_stops (
@@ -384,6 +461,7 @@ function seedDatabase(db: DatabaseSync) {
         gradient.name,
         gradient.favorite ? 1 : 0,
         gradient.index,
+        buildDefaultDescription(gradient),
         gradient.deg,
         gradient.type ?? "linear",
         null,
@@ -441,6 +519,12 @@ function normalizeText(value: unknown, fallback: string, maxLength: number) {
   return text.slice(0, maxLength) || fallback;
 }
 
+function normalizeOptionalText(value: unknown, maxLength: number) {
+  const text = typeof value === "string" ? value.trim() : "";
+
+  return text ? text.slice(0, maxLength) : null;
+}
+
 function normalizeType(value: unknown): GradientType {
   return gradientTypes.includes(value as GradientType)
     ? (value as GradientType)
@@ -480,6 +564,7 @@ function normalizeGradientInput(input: GradientInput) {
 
   return {
     name: normalizeText(input.name, "Untitled Gradient", 80),
+    description: normalizeOptionalText(input.description, 200),
     favorite: input.favorite ? 1 : 0,
     deg: Number.isFinite(Number(input.deg)) ? Number(input.deg) : 0,
     type,
@@ -566,6 +651,38 @@ function getNextIndex(db: DatabaseSync) {
   return normalizeIndex(nextIndex);
 }
 
+function getBackupIndex(index: unknown, fallbackIndex: number) {
+  const value = typeof index === "string" || typeof index === "number"
+    ? String(index).trim()
+    : "";
+
+  return value ? normalizeIndex(value) : normalizeIndex(fallbackIndex);
+}
+
+function getUniqueBackupIndex(
+  wantedIndex: string,
+  usedIndexes: Set<string>,
+  fallbackIndex: number,
+) {
+  if (!usedIndexes.has(wantedIndex)) {
+    usedIndexes.add(wantedIndex);
+
+    return wantedIndex;
+  }
+
+  let nextIndex = fallbackIndex;
+  let uniqueIndex = normalizeIndex(nextIndex);
+
+  while (usedIndexes.has(uniqueIndex)) {
+    nextIndex += 1;
+    uniqueIndex = normalizeIndex(nextIndex);
+  }
+
+  usedIndexes.add(uniqueIndex);
+
+  return uniqueIndex;
+}
+
 function hydrateGradient(
   row: GradientRow,
   stops: StopRow[],
@@ -576,6 +693,7 @@ function hydrateGradient(
     name: row.name,
     favorite: Boolean(row.favorite),
     index: row.display_index,
+    description: row.description,
     deg: row.deg,
     group: [],
     gradient: stops.map((stop) => ({
@@ -629,6 +747,7 @@ export function listGradients(
         name,
         favorite,
         display_index,
+        description,
         deg,
         type,
         css_background,
@@ -678,11 +797,12 @@ export function createGradient(input: GradientInput): StoredGradient {
       name,
       favorite,
       display_index,
+      description,
       deg,
       type,
       css_background,
       blend_mode
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   db.exec("BEGIN");
@@ -693,6 +813,7 @@ export function createGradient(input: GradientInput): StoredGradient {
       gradient.name,
       gradient.favorite,
       displayIndex,
+      gradient.description,
       gradient.deg,
       gradient.type,
       null,
@@ -732,6 +853,7 @@ export function updateGradient(
       `UPDATE gradients
       SET
         name = ?,
+        description = ?,
         favorite = ?,
         deg = ?,
         type = ?,
@@ -741,6 +863,7 @@ export function updateGradient(
       WHERE id = ?`,
     ).run(
       gradient.name,
+      gradient.description,
       gradient.favorite,
       gradient.deg,
       gradient.type,
@@ -782,6 +905,7 @@ export function getGradient(gradientId: number): StoredGradient {
         name,
         favorite,
         display_index,
+        description,
         deg,
         type,
         css_background,
@@ -819,6 +943,124 @@ export function getGradient(gradientId: number): StoredGradient {
     stops,
     tags.map((tag) => tag.color_key),
   );
+}
+
+export function exportGradientBackup(): GradientBackup {
+  const db = getDatabase();
+  const gradients = db
+    .prepare(
+      `SELECT
+        id,
+        name,
+        favorite,
+        display_index,
+        description,
+        deg,
+        type,
+        css_background,
+        blend_mode
+      FROM gradients
+      ORDER BY CAST(display_index AS INTEGER), id`,
+    )
+    .all() as GradientRow[];
+  const stops = db.prepare(
+    `SELECT
+      color,
+      position
+    FROM gradient_stops
+    WHERE gradient_id = ?
+    ORDER BY sort_order, id`,
+  );
+  const tags = db.prepare(
+    `SELECT color_key
+    FROM gradient_color_tags
+    WHERE gradient_id = ?
+    ORDER BY color_key`,
+  );
+
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    gradients: gradients.map((gradient) =>
+      hydrateGradient(
+        gradient,
+        stops.all(gradient.id) as StopRow[],
+        (tags.all(gradient.id) as TagRow[]).map((tag) => tag.color_key),
+      ),
+    ),
+  };
+}
+
+export function importGradientBackup(payload: unknown) {
+  const sourceGradients = Array.isArray(payload)
+    ? payload
+    : payload &&
+        typeof payload === "object" &&
+        Array.isArray((payload as { gradients?: unknown }).gradients)
+      ? (payload as { gradients: unknown[] }).gradients
+      : null;
+
+  if (!sourceGradients) {
+    throw new Error("导入文件格式不正确。");
+  }
+
+  const db = getDatabase();
+  const insertGradient = db.prepare(`
+    INSERT INTO gradients (
+      name,
+      favorite,
+      display_index,
+      description,
+      deg,
+      type,
+      css_background,
+      blend_mode
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const usedIndexes = new Set<string>();
+
+  db.exec("BEGIN");
+
+  try {
+    db.prepare("DELETE FROM gradients").run();
+    db.prepare(
+      "DELETE FROM sqlite_sequence WHERE name IN ('gradients', 'gradient_stops')",
+    ).run();
+
+    sourceGradients.forEach((sourceGradient, sourceIndex) => {
+      const gradient = normalizeGradientInput(sourceGradient as GradientInput);
+      const wantedIndex = getBackupIndex(
+        (sourceGradient as { index?: unknown })?.index,
+        sourceIndex + 1,
+      );
+      const displayIndex = getUniqueBackupIndex(
+        wantedIndex,
+        usedIndexes,
+        sourceIndex + 1,
+      );
+      const result = insertGradient.run(
+        gradient.name,
+        gradient.favorite,
+        displayIndex,
+        gradient.description,
+        gradient.deg,
+        gradient.type,
+        null,
+        null,
+      );
+      const gradientId = Number(result.lastInsertRowid);
+
+      insertStops(db, gradientId, gradient.gradient);
+      replaceColorTags(db, gradientId, gradient.gradient);
+    });
+
+    db.exec("COMMIT");
+
+    return exportGradientBackup();
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function parseColorFilter(value: string | null): ColorFilter | undefined {

@@ -21,6 +21,7 @@ export type GradientScheme = {
   name: string;
   favorite: boolean;
   index: string;
+  description?: string | null;
   deg: number;
   group: string[];
   gradient: GradientStop[];
