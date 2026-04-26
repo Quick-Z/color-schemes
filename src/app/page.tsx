@@ -6,7 +6,7 @@ export default function Home() {
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-8">
         <header className="flex flex-col gap-4 border-b border-black/10 pb-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="mt-2 bg-gradient-to-r from-rose-500 via-amber-400 via-emerald-500 via-sky-500 to-violet-600 bg-clip-text text-3xl font-semibold text-transparent sm:text-4xl">
+            <h1 className="animated-title-gradient mt-2 bg-clip-text text-3xl font-semibold text-transparent sm:text-4xl">
               渐变配色库
             </h1>
           </div>

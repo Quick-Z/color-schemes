@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import Database from "better-sqlite3";
+import type { Database as SQLiteDatabase } from "better-sqlite3";
 import parsedGradients from "@/data/gradients-parsed.json";
 import {
   gradientExtras,
@@ -109,22 +110,7 @@ const namedColors: Record<string, [number, number, number]> = {
   indigo: [75, 0, 130],
   purple: [128, 0, 128],
 };
-const nodeProcess = process as typeof process & {
-  getBuiltinModule?: (id: string) => unknown;
-};
-const sqliteModule =
-  nodeProcess.getBuiltinModule?.("node:sqlite") ??
-  nodeProcess.getBuiltinModule?.("sqlite");
-
-if (!sqliteModule) {
-  throw new Error("当前 Node.js 版本不支持内置 SQLite。");
-}
-
-const { DatabaseSync: SQLiteDatabaseSync } = sqliteModule as {
-  DatabaseSync: new (path: string) => DatabaseSync;
-};
-
-let database: DatabaseSync | undefined;
+let database: SQLiteDatabase | undefined;
 
 function normalizeIndex(index: string | number) {
   return String(index).padStart(3, "0");
@@ -331,14 +317,14 @@ function getDatabase() {
   }
 
   fs.mkdirSync(databaseDir, { recursive: true });
-  database = new SQLiteDatabaseSync(databasePath);
+  database = new Database(databasePath);
   database.exec("PRAGMA foreign_keys = ON;");
   initializeDatabase(database);
 
   return database;
 }
 
-function initializeDatabase(db: DatabaseSync) {
+function initializeDatabase(db: SQLiteDatabase) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS gradients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -406,7 +392,7 @@ function initializeDatabase(db: DatabaseSync) {
   }
 }
 
-function ensureDescriptionColumn(db: DatabaseSync) {
+function ensureDescriptionColumn(db: SQLiteDatabase) {
   const columns = db.prepare("PRAGMA table_info(gradients)").all() as Array<{
     name: string;
   }>;
@@ -416,7 +402,7 @@ function ensureDescriptionColumn(db: DatabaseSync) {
   }
 }
 
-function refreshDefaultDescriptions(db: DatabaseSync) {
+function refreshDefaultDescriptions(db: SQLiteDatabase) {
   const updateDescription = db.prepare(`
     UPDATE gradients
     SET
@@ -431,7 +417,7 @@ function refreshDefaultDescriptions(db: DatabaseSync) {
   }
 }
 
-function seedDatabase(db: DatabaseSync) {
+function seedDatabase(db: SQLiteDatabase) {
   const insertGradient = db.prepare(`
     INSERT INTO gradients (
       name,
@@ -572,7 +558,11 @@ function normalizeGradientInput(input: GradientInput) {
   };
 }
 
-function insertStops(db: DatabaseSync, gradientId: number, stops: GradientStop[]) {
+function insertStops(
+  db: SQLiteDatabase,
+  gradientId: number,
+  stops: GradientStop[],
+) {
   const insertStop = db.prepare(`
     INSERT INTO gradient_stops (
       gradient_id,
@@ -588,7 +578,7 @@ function insertStops(db: DatabaseSync, gradientId: number, stops: GradientStop[]
 }
 
 function replaceColorTags(
-  db: DatabaseSync,
+  db: SQLiteDatabase,
   gradientId: number,
   stops: GradientStop[],
 ) {
@@ -608,7 +598,7 @@ function replaceColorTags(
   });
 }
 
-function refreshAllColorTags(db: DatabaseSync) {
+function refreshAllColorTags(db: SQLiteDatabase) {
   const gradients = db
     .prepare("SELECT id FROM gradients")
     .all() as Array<{ id: number }>;
@@ -642,7 +632,7 @@ function refreshAllColorTags(db: DatabaseSync) {
   }
 }
 
-function getNextIndex(db: DatabaseSync) {
+function getNextIndex(db: SQLiteDatabase) {
   const row = db
     .prepare("SELECT MAX(CAST(display_index AS INTEGER)) AS maxIndex FROM gradients")
     .get() as MaxIndexRow | undefined;
