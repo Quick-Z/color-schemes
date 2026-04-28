@@ -1,3 +1,4 @@
+import Link from "next/link";
 import GradientGallery from "./components/GradientGallery";
 
 export default function Home() {
@@ -10,9 +11,12 @@ export default function Home() {
               渐变配色库
             </h1>
           </div>
-          <p className="text-sm font-medium text-zinc-500">
-            CSS background collection
-          </p>
+          <Link
+            className="rounded-md px-2 py-1 text-sm font-medium text-zinc-500 transition hover:bg-white hover:text-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-300 focus:ring-offset-2 focus:ring-offset-[#f4f5f7]"
+            href="/about"
+          >
+            鹅包米
+          </Link>
         </header>
 
         <GradientGallery />

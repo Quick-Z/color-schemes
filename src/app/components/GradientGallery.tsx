@@ -100,6 +100,44 @@ function TrashIcon() {
   );
 }
 
+function DownloadIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M5 21h14" />
+    </svg>
+  );
+}
+
+function UploadIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 21V9" />
+      <path d="m7 14 5-5 5 5" />
+      <path d="M5 3h14" />
+    </svg>
+  );
+}
+
 function formatNumber(value: number) {
   return Number.isInteger(value)
     ? String(value)
@@ -386,10 +424,6 @@ export default function GradientGallery() {
     setIsLoading(true);
     setIsLoadingMore(false);
     setError(null);
-    setGradients([]);
-    setTotal(0);
-    setNextOffset(0);
-    setHasMore(false);
 
     fetchGradientsPage({
       offset: 0,
@@ -747,19 +781,21 @@ export default function GradientGallery() {
           </p>
           <div className="flex flex-wrap gap-2">
             <button
-              className="h-10 rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-zinc-300 focus:ring-offset-2"
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-[#d2e1d5] bg-[#ecf4ee] px-4 text-sm font-semibold text-zinc-700 transition hover:bg-[#e2ece5] focus:outline-none focus:ring-2 focus:ring-[#d2e1d5] focus:ring-offset-2"
               onClick={handleExportBackup}
               type="button"
             >
-              导出 JSON
+              <DownloadIcon />
+              导出配色方案
             </button>
             <button
-              className="h-10 rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-zinc-300 focus:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-4 text-sm font-semibold text-zinc-700 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-200 focus:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
               disabled={isImporting}
               onClick={() => importInputRef.current?.click()}
               type="button"
             >
-              {isImporting ? "导入中" : "导入 JSON"}
+              <UploadIcon />
+              {isImporting ? "导入中" : "导入配色方案"}
             </button>
             <input
               accept="application/json,.json"
